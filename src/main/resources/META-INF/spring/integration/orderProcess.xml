@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:beans="http://www.springframework.org/schema/beans"
+       xmlns:int="http://www.springframework.org/schema/integration"
+       xmlns:int-http="http://www.springframework.org/schema/integration/http"
+       xmlns:int-jdbc="http://www.springframework.org/schema/integration/jdbc"
+       xsi:schemaLocation="http://www.springframework.org/schema/integration
+		https://www.springframework.org/schema/integration/spring-integration.xsd
+		http://www.springframework.org/schema/beans
+		https://www.springframework.org/schema/beans/spring-beans.xsd
+        http://www.springframework.org/schema/integration/http
+        http://www.springframework.org/schema/integration/http/spring-integration-http.xsd
+        http://www.springframework.org/schema/integration/jdbc
+        https://www.springframework.org/schema/integration/jdbc/spring-integration-jdbc.xsd">
+    <int:channel id="readJsonRequestChannel"/>
+    <int:channel id="readJsonReplyChannel"/>
+    <int:channel id="requestHttpChannel"/>
+    <int:channel id="orderEnriched"/>
+    <int:channel id="orderSplitChannel">
+        <int:dispatcher task-executor="producerThreadExecutor"/>
+    </int:channel>
+
+    <int:channel id="orderSplitItemChannel">
+        <int:dispatcher task-executor="producerThreadExecutor"/>
+    </int:channel>
+
+    <int:channel id="bookChannel"/>
+    <int:channel id="cdChannel"/>
+    <int:channel id="postcardChannel"/>
+    <int:channel id="processedItems"/>
+    <int:channel id="aggrOutChannel"/>
+
+    <beans:bean id="producerThreadExecutor" class="org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor">
+        <property name="maxPoolSize" value="100"/>
+        <property name="queueCapacity" value="50"/>
+    </beans:bean>
+
+    <beans:bean id="splitterBean" class="com.example.demo.splitter.OrderRelatedSplitter"/>
+
+    <beans:bean id="orderItemAggregator" class="com.example.demo.aggregator.OrderItemAggregator"/>
+
+    <beans:bean id="discountProcess" class="com.example.demo.service.DiscountProcess"/>
+
+    <int-http:inbound-channel-adapter
+            id="JsonReceivingInboundAdapter" channel="requestHttpChannel" supported-methods="PUT" path="/api/passJson"
+            request-payload-type="com.example.demo.domain.OrderFullList">
+        <int-http:request-mapping consumes="application/json"/>
+    </int-http:inbound-channel-adapter>
+
+    <int:splitter id="OrderSplitter"
+                  ref="splitterBean"
+                  method="splitOrder"
+                  input-channel="requestHttpChannel"
+                  output-channel="orderSplitChannel"/>
+
+    <int:header-enricher id="orderIdEnricher" input-channel="orderSplitChannel"
+                         output-channel="orderEnriched">
+        <int:header name="orderId"
+                    expression="payload.orderId"/>
+    </int:header-enricher>
+
+    <int:splitter id="OrderItemSplitter"
+                  ref="splitterBean"
+                  method="splitOrderItem"
+                  input-channel="orderEnriched"
+                  output-channel="orderSplitItemChannel"
+                  apply-sequence="true"/>
+
+    <int:router input-channel="orderSplitItemChannel" expression="payload.itemType">
+        <int:mapping value="BOOK" channel="bookChannel"/>
+        <int:mapping value="CD" channel="cdChannel"/>
+        <int:mapping value="POSTCARD" channel="postcardChannel"/>
+    </int:router>
+
+    <int:service-activator input-channel="bookChannel" method="processBook" output-channel="processedItems"
+                           ref="discountProcess"/>
+
+    <int:service-activator input-channel="cdChannel" method="processCD" output-channel="processedItems"
+                           ref="discountProcess"/>
+
+    <int:service-activator input-channel="postcardChannel" method="processPostcard" output-channel="processedItems"
+                           ref="discountProcess"/>
+
+    <int:aggregator id="ordersAggregator" input-channel="processedItems" ref="orderItemAggregator" method="aggregateOrderItem"
+                    output-channel="aggrOutChannel"/>
+
+    <int-jdbc:outbound-channel-adapter
+            query="insert into data (ORDER_ID, DISCOUNT_TOTAL, ITEM_LIST) values (:payload.orderId, :payload.discountTotal, :payload.itemList)"
+            data-source="dataSource"
+            channel="aggrOutChannel"/>
+
+    <!--    <int:channel  id="jmsOutputChannel"/>-->
+    <!--    <beans:bean id="jmsQueueConnectionFactorySecured" class="javax.jms.connectionFactory">-->
+    <!--    </beans:bean>-->
+    <!--    <int-jms:inbound-channel-adapter id="jmsIn" jms-template="jmsTemplate"-->
+    <!--                                     destination-name="in.message.queue.name"-->
+    <!--                                     channel="jmsOutputChannel">-->
+    <!--        <int:poller fixed-rate="30000"/>-->
+    <!--    </int-jms:inbound-channel-adapter>-->
+
+    <!--    <int:router input-channel="inChannel" expression="payload.colour">-->
+    <!--        <int:mapping value="RED" channel="redChannel"/>-->
+    <!--        <int:mapping value="YELLOW" channel="yellowChannel"/>-->
+    <!--        <int:mapping value="GREEN" channel="greenChannel"/>-->
+    <!--    </int:router>-->
+
+    <!--    <int:gateway id="readJsonSercice"-->
+    <!--                 service-interface="com.example.demo.gateway.ReadJsonFromFileGateway"-->
+    <!--                 default-request-channel="readJsonRequestChannel"-->
+    <!--                 default-reply-timeout="10000"-->
+    <!--                 default-reply-channel="readJsonReplyChannel"/>-->
+
+    <!--    <int:filter input-channel="inChannel" output-channel="outChannel"-->
+    <!--                expression="payload.itemType.startsWith('BOOK')" />-->
+
+</beans>
